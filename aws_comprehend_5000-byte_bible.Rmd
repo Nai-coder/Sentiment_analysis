@@ -1,0 +1,462 @@
+---
+title: "Data Engineering 2: Cloud Computing"
+subtitle: "Sentiment Analysis of Different Bible versions using AWS"
+author: "CEU Student 2200147"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  prettydoc::html_pretty:
+    highlight: github
+    theme: cayman
+    toc: yes
+---
+
+```{r}
+rm(list=ls())
+```
+
+# Load libraries
+
+```{r}
+library(rvest)
+library(readr)
+library(stringr)
+library(aws.comprehend)
+library(dplyr)
+library(ggplot2)
+```
+
+
+# Function for extracting sentiment
+
+Make function to extract sentiment:
+
+```{r}
+extract_sentiment <- function(file_path){
+  # Reading txt file
+  txtfile <- read_file(file_path)
+  # Cleaning - removing \n and ""
+  cleanedtext <- gsub("\n", "", txtfile, fixed = TRUE)
+  # Cleaning - merging multiple spaces into a single space
+  cleanedtext <- str_replace(gsub("\\s+", " ", str_trim(cleanedtext)), "B", "b")
+  # Converting txt to bytes
+  byte.counter <- nchar(cleanedtext, type = "bytes")
+  cat("Total bytes: " , byte.counter, "\n")
+  xiteration <-  byte.counter %/% 5000
+  cat("Number of full iterations: " , xiteration, "\n")
+  remainder.count <- (xiteration - (byte.counter / 5000)) * -1
+  cat("Remainder of bytes: ", remainder.count, "\n")
+  full.iter <- byte.counter / 5000
+  cat("Full iteration: ", full.iter, "\n")
+  five.k.iterations <- byte.counter / full.iter
+  cat("5000 byte iterations: " , five.k.iterations, "\n", "\n")
+  # Breaking the input text into character vectors of length.segm characters each
+  char.segments <- function(x, segm.length){
+      byte.counter <- nchar(x, type = 'bytes')
+      f <- c(1, rep(0, segm.length - 1))
+      f <- cumsum(rep(f, length.out = byte.counter))
+      s <- split(unlist(strsplit(x,'')), f)
+      unname(sapply(s, paste, collapse = ''))
+  }
+  five.thousand.byte.chunk <- char.segments(cleanedtext, 5000)
+  count.of.five.thousand <- nchar(five.thousand.byte.chunk, type = "bytes")
+  # Setting up vectors
+  sentiment_vector = c() 
+  positive_vector = c()
+  negative_vector = c()
+  # Setting variable for the loop
+  count = 0
+  # Iterating through the chunks 
+  for (i in 1:(full.iter+1)) { 
+      if (five.thousand.byte.chunk[i] > "") {
+          count = count + 1
+          df <- detect_sentiment(five.thousand.byte.chunk[i])
+          # Extract sentiments
+          sentiment_vector <- c(sentiment_vector, as.character(df$Sentiment))
+          # Extract positivity score 
+          positive_vector <- c(positive_vector, df$Positive)
+          # Extract negativity score 
+          negative_vector <- c(negative_vector, df$Negative)
+      }
+  }
+  df_out <- cbind(positive_vector, negative_vector, sentiment_vector)
+  return(df_out)
+}
+```
+
+Test first on a single text source:
+
+```{r}
+# file_path <- "Bible_Texts/01_King_James_bible.txt"
+# df_test <- data.frame(extract_sentiment(file_path))
+# str(df_test)
+```
+
+```{r}
+txt_files <- list.files("Bible_Texts/")
+txt_files
+list_of_txt_file_paths <- paste0("Bible_Texts/", txt_files)
+list_of_txt_file_paths
+```
+
+```{r}
+all_data <- c()
+```
+
+
+Now for the 4 texts we can perform sentiment analysis using the following for loop and save the results to a single data frame:
+
+```{r}
+for (i in 1:length(list_of_txt_file_paths)) {
+  all_data <- rbind(all_data, (data.frame(extract_sentiment(list_of_txt_file_paths[i]), i )))
+}
+```
+
+Some cleaning up:
+
+```{r}
+df_final <- all_data %>% mutate(positive_vector = as.numeric(positive_vector),
+                                negative_vector = as.numeric(negative_vector))
+```
+
+Some plots:
+
+```{r}
+library(scales)
+color <- c("#3a5e8cFF", "#10a53dFF", "#541352FF", "#ffcf20FF", "#2f9aa0FF")
+#blue  #3a5e8c   # purple #541352    teal #2f9aa0  yellow #ffcf20   # green #10a53d
+show_col(color)
+df_final$col <- as.character(color[df_final$i])
+```
+# Plots
+
+```{r}
+# Plotting the scores
+ggplot(data = df_final) +
+  geom_point(aes(x = positive_vector, y = negative_vector, color = col), alpha = 0.3)  + 
+  scale_colour_identity() + #makes colours read properly
+  geom_point(aes(x=mean(as.numeric(df_final$positive_vector[df_final$i == 1])),
+                 y=mean(as.numeric(df_final$negative_vector[df_final$i == 1]))), 
+             colour=color[1], shape = 3, size = 7, stroke = 3) +
+  geom_point(aes(x=mean(as.numeric(df_final$positive_vector[df_final$i == 2])),
+                 y=mean(as.numeric(df_final$negative_vector[df_final$i == 2]))), 
+             colour=color[2], shape = 3, size = 7, stroke = 3) +
+  geom_point(aes(x=mean(as.numeric(df_final$positive_vector[df_final$i == 3])),
+                 y=mean(as.numeric(df_final$negative_vector[df_final$i == 3]))), 
+             colour=color[3], shape = 3, size = 7, stroke = 3) +
+  geom_point(aes(x=mean(as.numeric(df_final$positive_vector[df_final$i == 4])),
+                 y=mean(as.numeric(df_final$negative_vector[df_final$i == 4]))), 
+             colour=color[4], shape = 3, size = 7, stroke = 3) +
+  ggtitle("Positive vs negative sentiments in different biblical versions") +
+  xlab("Positive sentiments") +
+  ylab("Negative sentiments") +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_y_continuous(limits = c(0, 1))  +
+  theme_bw() + 
+  geom_label( 
+    label="King James Bible", 
+    x=0.9,
+    y=0.9,
+    label.padding = unit(0.55, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "white",
+    fill= color[1]
+  ) + 
+  geom_label( 
+    label="World English Bible", 
+    x=0.9,
+    y=0.8,
+    label.padding = unit(0.55, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "black",
+    fill= color[2]
+  ) + 
+  geom_label( 
+    label="English Bible", 
+    x=0.9,
+    y=0.7,
+    label.padding = unit(0.55, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "White",
+    fill= color[3]
+  ) + 
+  geom_label( 
+    label="Github Bible", 
+    x=0.9,
+    y=0.6,
+    label.padding = unit(0.55, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "black",
+    fill= color[4]
+  )
+```
+
+```{r}
+ggplot(data = df_final)  +
+  geom_boxplot(aes(x = i, y = positive_vector, fill = col)) +
+  labs(title = "Boxplot for positive scores in Biblical versions", 
+       x = "Bible version", 
+       y = "Log-transformed positive scores" ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_y_log10() +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11L, hjust = 0.5, face = "bold"),
+    legend.position = "none")  +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 1])), size = 0.4, col = "darkgreen") +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 2])), size = 0.4, col = "red") +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 3])), size = 0.4, col = "blue") +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 4])), size = 0.4, col = "purple") +
+  scale_x_discrete(limits = c("King James Bible", "World English Bible", "English Bible","Github Bible"))
+```
+
+```{r}
+ggplot(data = df_final)  +
+  geom_boxplot(aes(x = i, y = negative_vector, fill = col)) +
+  labs(title = "Boxplot for negative scores in Biblical texts", 
+       x = "Bible version", 
+       y = "Log-transformed negative scores" ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_y_log10() +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11L, hjust = 0.5, face = "bold"),
+    legend.position = "none")  +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 1])), size = 0.4, col = "darkgreen") +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 2])), size = 0.4, col = "red") +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 3])), size = 0.4, col = "blue") +
+  geom_hline(yintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 4])), size = 0.4, col = "purple") +
+  scale_x_discrete(limits = c("King James Bible", "World English Bible", "English Bible","Github Bible"))
+```
+
+```{r}
+ggplot(data = df_final, aes(x = negative_vector, fill = col)) +
+  geom_histogram( bins = 50) + 
+  labs(title = "Histogram for negative scores in different versions", 
+       x = "Negative sentiments", 
+       y =  "Count",
+       fill = "Bible version")  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11L, hjust = 0.5, face = "bold"), 
+    legend.position = "none")  +
+  scale_fill_manual(values=color) + 
+  geom_label( 
+    label="King James Bible", 
+    x=0.85,
+    y=600,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "white",
+    fill= color[1]
+  ) + 
+  geom_label( 
+    label="World English Bible", 
+    x=0.85,
+    y=500,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "black",
+    fill= color[2]
+  ) + 
+  geom_label( 
+    label="English Bible", 
+    x=0.85,
+    y=400,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "White",
+    fill= color[3]
+  ) + 
+  geom_label( 
+    label="Github Bible", 
+    x=0.85,
+    y=300,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "black",
+    fill= color[4]
+  )
+```
+
+```{r}
+ggplot(data = df_final, aes(x = positive_vector, fill = col)) +
+  geom_histogram(bins = 50) + 
+  labs(title = "Histogram for positive scores in different versions", 
+       x = "Positive sentiments", 
+       y =  "Count",
+       fill = "Bible version")  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11L, hjust = 0.5, face = "bold"), 
+    legend.position = "none")  +
+  scale_fill_manual(values=color) + 
+  geom_label( 
+    label="King James Bible", 
+    x=0.85,
+    y=600,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "white",
+    fill= color[1]
+  ) + 
+  geom_label( 
+    label="World English Bible", 
+    x=0.85,
+    y=500,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "black",
+    fill= color[2]
+  ) + 
+  geom_label( 
+    label="English Bible", 
+    x=0.85,
+    y=400,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "White",
+    fill= color[3]
+  ) + 
+  geom_label( 
+    label="Github Bible", 
+    x=0.85,
+    y=300,
+    label.padding = unit(0.35, "lines"), # Rectangle size around label
+    label.size = 0.25,
+    color = "black",
+    fill= color[4]
+  )
+```
+
+```{r}
+ggplot(data = df_final, aes(x = negative_vector, fill = col)) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "Density plot for negative scores in different versions", 
+       x = "Negative sentiments", 
+       y =  "Density",
+       fill = "Bible version")  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11L, hjust = 0.5, face = "bold"), legend.position = "none")  +
+  scale_fill_manual(values=color) +
+  geom_vline(xintercept = mean(as.numeric(df_final$negative_vector[df_final$i == 1])), size = 0.4, col = color[1]) +
+  geom_vline(xintercept = mean(as.numeric(df_final$negative_vector[df_final$i == 2])), size = 0.4, col = color[2]) +
+  geom_vline(xintercept = mean(as.numeric(df_final$negative_vector[df_final$i == 3])), size = 0.4, col = color[3]) +
+  geom_vline(xintercept = mean(as.numeric(df_final$negative_vector[df_final$i == 4])), size = 0.4, col = color[4]) +
+  scale_x_log10()
+```
+
+
+```{r}
+ggplot(data = df_final, aes(x = positive_vector, fill = col)) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "Density plot for positive scores in different versions", 
+       x = "Positive sentiments", 
+       y =  "Density",
+       fill = "Bible version")  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11L, hjust = 0.5, face = "bold"), legend.position = "none")  +
+  scale_fill_manual(values=color) +
+  geom_vline(xintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 1])), size = 0.4, col = color[1]) +
+  geom_vline(xintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 2])), size = 0.4, col = color[2]) +
+  geom_vline(xintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 3])), size = 0.4, col = color[3]) +
+  geom_vline(xintercept = mean(as.numeric(df_final$positive_vector[df_final$i == 4])), size = 0.4, col = color[4]) +
+  scale_x_log10()
+```
+
+# T-test and ANOVA
+
+In the following sections, to satisfy the condition of normality of the residuals before performing a series of tests, the data will be log-transformed so as to resemble a gaussian distribution. The QQ-plots show that this was a fairly good transformation and thus the test results can be used.
+
+## T-tests
+
+We perform a series of T-tests with a 95% confidence interval for paired vectors from different bible versions. The differences in texts can be said to be statistically significant when the p value is high.
+
+```{r}
+Ttest1_2 <- t.test(as.numeric(log(df_final$negative_vector[df_final$i == 1])), log(as.numeric(df_final$negative_vector[df_final$i == 2])), alternative = "two.sided")
+Ttest1_2 
+Ttest1_3 <- t.test(log(as.numeric(df_final$negative_vector[df_final$i == 1])), log(as.numeric(df_final$negative_vector[df_final$i == 3])), alternative = "two.sided")
+Ttest1_3
+Ttest1_4 <- t.test(log(as.numeric(df_final$negative_vector[df_final$i == 1])), log(as.numeric(df_final$negative_vector[df_final$i == 4])), alternative = "two.sided")
+Ttest1_4 
+Ttest2_3 <- t.test(log(as.numeric(df_final$negative_vector[df_final$i == 2])), log(as.numeric(df_final$negative_vector[df_final$i == 3])), alternative = "two.sided")
+Ttest2_3
+Ttest2_4 <- t.test(log(as.numeric(df_final$negative_vector[df_final$i == 2])), log(as.numeric(df_final$negative_vector[df_final$i == 4])), alternative = "two.sided")
+Ttest2_4 
+Ttest3_4 <- t.test(log(as.numeric(df_final$negative_vector[df_final$i == 3])), log(as.numeric(df_final$negative_vector[df_final$i == 4])), alternative = "two.sided")
+Ttest3_4 
+```
+
+No difference between 1 and 3.
+
+```{r}
+Ttest1_2 <- t.test(as.numeric(log(df_final$positive_vector[df_final$i == 1])), log(as.numeric(df_final$positive_vector[df_final$i == 2])), alternative = "two.sided")
+Ttest1_2 
+Ttest1_3 <- t.test(log(as.numeric(df_final$positive_vector[df_final$i == 1])), log(as.numeric(df_final$positive_vector[df_final$i == 3])), alternative = "two.sided")
+Ttest1_3
+Ttest1_4 <- t.test(log(as.numeric(df_final$positive_vector[df_final$i == 1])), log(as.numeric(df_final$positive_vector[df_final$i == 4])), alternative = "two.sided")
+Ttest1_4 
+Ttest2_3 <- t.test(log(as.numeric(df_final$positive_vector[df_final$i == 2])), log(as.numeric(df_final$positive_vector[df_final$i == 3])), alternative = "two.sided")
+Ttest2_3
+Ttest2_4 <- t.test(log(as.numeric(df_final$positive_vector[df_final$i == 2])), log(as.numeric(df_final$positive_vector[df_final$i == 4])), alternative = "two.sided")
+Ttest2_4 
+Ttest3_4 <- t.test(log(as.numeric(df_final$positive_vector[df_final$i == 3])), log(as.numeric(df_final$positive_vector[df_final$i == 4])), alternative = "two.sided")
+Ttest3_4 
+```
+
+No difference between 1 and 4, 2 and 3 (for positive scores).
+
+Still, the t-test is most likely not the appropriate test as the number of data points we have is quite high - the t-test is usually used for smaller samples as its tails are quite heavy and allow for wider confidence intervals.
+
+## ANOVA tests
+
+Only the ANOVA can help us to make inference about the population given the sample at hand, and help us to answer the initial research question “Is the sentiment different between the 4 versions of the Bible?”.
+
+```{r}
+oneway.test(log(negative_vector) ~ i,
+  data = df_final,
+  var.equal = FALSE # assuming non-equal variances
+)
+```
+
+```{r}
+oneway.test(log(positive_vector) ~ i,
+  data = df_final,
+  var.equal = FALSE # assuming non-equal variances
+)
+```
+
+```{r}
+res_aov <- aov(log(negative_vector) ~ i,
+  data = df_final,
+)
+summary(res_aov)
+library(car)
+qqPlot(res_aov$residuals,
+  id = FALSE,
+  ylab = ("AOV residuals"),
+  xlab= ("normalised quantiles")) + # id = FALSE to remove point identification
+  title("QQ Plot for log(negative scores)")
+```
+
+```{r}
+res_aov <- aov(log(positive_vector) ~ i,
+  data = df_final,
+)
+summary(res_aov)
+qqPlot(res_aov$residuals,
+  id = FALSE,
+  ylab = ("AOV residuals"),
+  xlab= ("normalised quantiles")) + # id = FALSE to remove point identification
+  title("QQ Plot for log(positive scores)")
+```
+
+From the density and QQ-plots above, we can already see that the normality assumption seems to be met. The points in the QQ-plots roughly follow the straight line and most of them are within the confidence bands, also indicating that residuals follow approximately a normal distribution.
+
+Given that the p-value is smaller than 0.05 for the negative scores, we reject the null hypothesis, so we reject the hypothesis that all means are equal. Therefore, we can conclude that at least one version is different than the others in terms of negative scores (p-value = 9.56e-07).
+
+Given that the p-value is higher than 0.05 for the positive scores, we cannot reject the null hypothesis, and conclude that all means are equal. Therefore, we can conclude that all four versions of the Bible are equally positive (p-value = 0.161).
+
+
+
